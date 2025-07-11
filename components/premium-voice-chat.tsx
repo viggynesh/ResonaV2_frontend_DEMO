@@ -4,7 +4,9 @@ import { useState, useEffect, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Mic, MicOff, Phone, PhoneOff, Volume2, User, Bot, Sparkles, Zap } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Mic, MicOff, Phone, PhoneOff, Volume2, User, Bot, Sparkles, Zap, Settings } from "lucide-react"
 
 interface PremiumVoiceChatProps {
   voiceId: string
@@ -19,14 +21,34 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
   const [error, setError] = useState<string | null>(null)
   const [currentResponse, setCurrentResponse] = useState<string>("")
   const [isVisible, setIsVisible] = useState(false)
+  const [waitingForUser, setWaitingForUser] = useState(false)
+  const [aiPersonality, setAiPersonality] = useState<string>(
+    "You are a helpful AI assistant having a natural conversation.",
+  )
 
   const recognitionRef = useRef<any>(null)
   const isProcessingRef = useRef(false)
   const shouldContinueListeningRef = useRef(false)
+  const waitTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const listeningTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
     setIsVisible(true)
   }, [])
+
+  // Cleanup voice when component unmounts
+  useEffect(() => {
+    return () => {
+      if (voiceId && !voiceId.startsWith("mock-voice-")) {
+        // Cleanup the voice when chat ends
+        fetch("/api/cleanup-voice", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ voiceId }),
+        }).catch(console.error)
+      }
+    }
+  }, [voiceId])
 
   useEffect(() => {
     const initSpeechRecognition = () => {
@@ -42,11 +64,35 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
           console.log("🎤 Speech recognition started")
           setIsListening(true)
           setError(null)
+          setWaitingForUser(false)
+
+          // Clear any existing timeout
+          if (listeningTimeoutRef.current) {
+            clearTimeout(listeningTimeoutRef.current)
+            listeningTimeoutRef.current = null
+          }
+
+          // Set 6-7 second timeout for listening
+          listeningTimeoutRef.current = setTimeout(() => {
+            console.log("⏰ 6-7 second listening timeout reached")
+            if (recognitionRef.current && isListening) {
+              recognition.stop()
+              setWaitingForUser(false)
+              setIsListening(false)
+              shouldContinueListeningRef.current = false
+            }
+          }, 6500) // 6.5 seconds
         }
 
         recognition.onend = () => {
           console.log("🎤 Speech recognition ended")
           setIsListening(false)
+
+          // Clear listening timeout
+          if (listeningTimeoutRef.current) {
+            clearTimeout(listeningTimeoutRef.current)
+            listeningTimeoutRef.current = null
+          }
 
           // Only restart if we should continue listening and not currently processing
           if (shouldContinueListeningRef.current && !isProcessingRef.current && !isSpeaking) {
@@ -66,6 +112,18 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
         recognition.onresult = async (event: any) => {
           const transcript = event.results[event.results.length - 1][0].transcript.trim()
           console.log("🗣️ User said:", transcript)
+
+          // Clear any waiting timeout
+          if (waitTimeoutRef.current) {
+            clearTimeout(waitTimeoutRef.current)
+            waitTimeoutRef.current = null
+          }
+
+          // Clear listening timeout
+          if (listeningTimeoutRef.current) {
+            clearTimeout(listeningTimeoutRef.current)
+            listeningTimeoutRef.current = null
+          }
 
           if (transcript.length > 0 && !isProcessingRef.current) {
             isProcessingRef.current = true
@@ -94,22 +152,55 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
               if (aiResponse.audioUrl) {
                 await playClonedVoiceAudio(aiResponse.audioUrl)
               }
+
+              // After AI response, start listening again for 6-7 seconds
+              console.log("🎤 Starting post-response listening period...")
+              setWaitingForUser(true)
+
+              // Small delay before starting recognition again
+              setTimeout(() => {
+                if (shouldContinueListeningRef.current && !isProcessingRef.current) {
+                  try {
+                    recognition.start()
+                  } catch (e) {
+                    console.log("Failed to restart recognition after AI response:", e)
+                    setWaitingForUser(false)
+                  }
+                }
+              }, 1000)
             } catch (error) {
               console.error("❌ AI Response error:", error)
               setError("Failed to get AI response")
             } finally {
               isProcessingRef.current = false
               setCurrentResponse("")
-              // Continue listening after AI response is complete
-              console.log("✅ Ready for next user input")
             }
           }
         }
 
         recognition.onerror = (event: any) => {
           console.error("❌ Speech recognition error:", event.error)
+
+          // Clear timeouts
+          if (listeningTimeoutRef.current) {
+            clearTimeout(listeningTimeoutRef.current)
+            listeningTimeoutRef.current = null
+          }
+
+          // Handle "no-speech" error gracefully by just pausing instead of showing error
+          if (event.error === "no-speech") {
+            console.log("🔇 No speech detected, pausing recognition")
+            setIsListening(false)
+            setWaitingForUser(false)
+            isProcessingRef.current = false
+            // Don't set error state for no-speech
+            return
+          }
+
+          // For other errors, show the error message
           setError(`Speech recognition error: ${event.error}`)
           setIsListening(false)
+          setWaitingForUser(false)
           isProcessingRef.current = false
         }
 
@@ -124,6 +215,12 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
     return () => {
       if (recognitionRef.current) {
         recognitionRef.current.stop()
+      }
+      if (waitTimeoutRef.current) {
+        clearTimeout(waitTimeoutRef.current)
+      }
+      if (listeningTimeoutRef.current) {
+        clearTimeout(listeningTimeoutRef.current)
       }
     }
   }, [isSpeaking])
@@ -163,8 +260,19 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
       recognitionRef.current.stop()
     }
 
+    if (waitTimeoutRef.current) {
+      clearTimeout(waitTimeoutRef.current)
+      waitTimeoutRef.current = null
+    }
+
+    if (listeningTimeoutRef.current) {
+      clearTimeout(listeningTimeoutRef.current)
+      listeningTimeoutRef.current = null
+    }
+
     setIsListening(false)
     setIsSpeaking(false)
+    setWaitingForUser(false)
     setError(null)
   }
 
@@ -174,6 +282,7 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
     } else if (recognitionRef.current && !isListening && !isProcessingRef.current && !isSpeaking) {
       console.log("🎤 Manually activating listening...")
       shouldContinueListeningRef.current = true
+      setWaitingForUser(false)
       try {
         recognitionRef.current.start()
       } catch (error) {
@@ -190,7 +299,7 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: [...messages, { role: "user", content: userInput }],
-          personality: "You are a helpful AI assistant having a natural conversation.",
+          personality: aiPersonality,
           voiceId: voiceId,
           audioEnabled: true,
         }),
@@ -241,11 +350,11 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
       >
         <div className="flowing-line mb-6">
           <h2 className="text-5xl font-bold text-white mb-4">
-            Chat with Your <span className="gradient-gold">Cloned Voice</span>
+            Chat with Your <span className="gradient-gold">AI Assistant</span>
           </h2>
         </div>
         <p className="text-xl text-gray-400 max-w-3xl mx-auto leading-relaxed">
-          Experience real-time AI conversation with your perfectly cloned voice
+          Experience real-time AI conversation with advanced voice synthesis
         </p>
       </div>
 
@@ -263,6 +372,28 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
           </CardTitle>
         </CardHeader>
         <CardContent className="p-8">
+          {/* AI Personality Configuration */}
+          {!isActive && (
+            <div className="glass-dark border border-yellow-500/30 rounded-2xl p-6 mb-8">
+              <div className="flex items-center mb-4">
+                <Settings className="w-6 h-6 text-yellow-400 mr-3" />
+                <h3 className="text-xl font-semibold text-white">AI Personality Setup</h3>
+              </div>
+              <div className="space-y-3">
+                <Label htmlFor="personality" className="text-gray-300 text-sm font-medium">
+                  Define how the AI should behave (e.g., "You are a master chef", "You are a fitness trainer")
+                </Label>
+                <Input
+                  id="personality"
+                  value={aiPersonality}
+                  onChange={(e) => setAiPersonality(e.target.value)}
+                  placeholder="You are a helpful AI assistant having a natural conversation."
+                  className="glass-dark border-yellow-500/30 text-white placeholder-gray-400 focus:border-yellow-400 bg-transparent"
+                />
+              </div>
+            </div>
+          )}
+
           {/* Voice Clone Status */}
           <div className="glass-dark border border-green-500/30 rounded-2xl p-6 mb-8">
             <div className="flex items-center justify-between mb-4">
@@ -273,7 +404,7 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
               <Badge className="bg-green-500/20 text-green-300 border border-green-500/30">ElevenLabs Neural HD</Badge>
             </div>
             <div className="text-green-400 mb-4">
-              Voice ID: {voiceId.slice(-12)}... | AI responses will use this cloned voice
+              Voice ID: {voiceId.slice(-12)}... | AI responses will use this voice
             </div>
             <audio controls src={sampleAudioUrl} className="w-full h-10 rounded-lg" />
           </div>
@@ -293,7 +424,9 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
                   ? "glass-dark border-4 border-green-400 glow-gold"
                   : isListening
                     ? "glass-dark border-4 border-blue-400 glow-gold"
-                    : "glass-dark border-4 border-gray-500 hover:border-yellow-400"
+                    : waitingForUser
+                      ? "glass-dark border-4 border-yellow-400 glow-gold"
+                      : "glass-dark border-4 border-gray-500 hover:border-yellow-400"
               }`}
               onClick={activateListening}
             >
@@ -301,6 +434,8 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
                 <Volume2 className="w-12 h-12 text-green-400" />
               ) : isListening ? (
                 <Mic className="w-12 h-12 text-blue-400" />
+              ) : waitingForUser ? (
+                <Mic className="w-12 h-12 text-yellow-400" />
               ) : (
                 <MicOff className="w-12 h-12 text-gray-500 hover:text-yellow-400" />
               )}
@@ -308,21 +443,25 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
 
             <h3 className="text-2xl font-semibold text-white mb-3">
               {isSpeaking
-                ? "AI Speaking (Cloned Voice)"
+                ? "AI Speaking"
                 : isListening
-                  ? "Listening..."
-                  : isActive
-                    ? "Ready for Conversation"
-                    : "Voice Chat Inactive"}
+                  ? "Listening... (6-7 seconds)"
+                  : waitingForUser
+                    ? "Waiting for Response..."
+                    : isActive
+                      ? "Ready for Conversation"
+                      : "Voice Chat Inactive"}
             </h3>
             <p className="text-gray-400 text-lg">
               {isActive
                 ? isSpeaking
-                  ? "AI is responding with the cloned voice"
+                  ? "AI is responding with the voice"
                   : isListening
-                    ? "Speak now - I'm listening"
-                    : "Click the mic above or speak to continue"
-                : "Start the conversation to experience voice cloning"}
+                    ? "Speak now - I'm listening for 6-7 seconds"
+                    : waitingForUser
+                      ? "Click the mic to continue or wait for auto-listen"
+                      : "Click the mic above or speak to continue"
+                : "Configure AI personality above, then start the conversation"}
             </p>
           </div>
 
@@ -414,17 +553,29 @@ export default function PremiumVoiceChat({ voiceId, sampleAudioUrl }: PremiumVoi
             </div>
             <div className="glass-dark rounded-2xl p-6">
               <Volume2 className="w-8 h-8 text-green-400 mx-auto mb-3" />
-              <p className="font-semibold text-white mb-2">Hear Cloned Voice</p>
-              <p className="text-gray-400 text-sm">AI responds with the uploaded voice</p>
+              <p className="font-semibold text-white mb-2">Hear AI Voice</p>
+              <p className="text-gray-400 text-sm">AI responds with synthesized voice</p>
             </div>
             <div className="glass-dark rounded-2xl p-6">
               <Sparkles className="w-8 h-8 text-blue-400 mx-auto mb-3" />
-              <p className="font-semibold text-white mb-2">Real-time AI</p>
-              <p className="text-gray-400 text-sm">Instant intelligent conversations</p>
+              <p className="font-semibold text-white mb-2">Auto-Listen</p>
+              <p className="text-gray-400 text-sm">6-7 second listening window after AI responses</p>
             </div>
           </div>
         </CardContent>
       </Card>
+
+      {/* Attribution */}
+      <div className="fixed bottom-4 right-4 z-50">
+        <div className="glass-dark border border-yellow-500/30 rounded-xl px-4 py-2 shadow-lg">
+          <div className="flex items-center space-x-2">
+            <Sparkles className="w-4 h-4 text-yellow-400" />
+            <span className="text-sm text-gray-300">
+              Made by <span className="gradient-gold font-semibold">Vignesh Kothandaraman</span>
+            </span>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

@@ -74,7 +74,7 @@ export default function HomePage() {
                 <Button
                   onClick={step === "chat" ? resetToClone : backToHero}
                   variant="outline"
-                  className="glass-dark border-yellow-500/30 text-white hover:bg-yellow-500/10"
+                  className="glass-dark border-yellow-500/30 text-white hover:bg-yellow-500/10 bg-transparent"
                 >
                   <ArrowLeft className="w-4 h-4 mr-2" />
                   Back
@@ -158,7 +158,7 @@ export default function HomePage() {
                       <Button
                         onClick={resetToClone}
                         variant="outline"
-                        className="glass-dark border-yellow-500/30 text-white hover:bg-yellow-500/10 px-6 py-3"
+                        className="glass-dark border-yellow-500/30 text-white hover:bg-yellow-500/10 px-6 py-3 bg-transparent"
                       >
                         Create New Clone
                       </Button>
@@ -170,6 +170,18 @@ export default function HomePage() {
               </div>
             )}
           </main>
+
+          {/* Attribution - Fixed position in bottom right */}
+          <div className="fixed bottom-6 right-6 z-50">
+            <div className="glass-dark rounded-xl px-4 py-3 border border-yellow-500/20 backdrop-blur-md">
+              <div className="flex items-center space-x-2">
+                <Sparkles className="w-4 h-4 text-yellow-400" />
+                <p className="text-gray-300 text-sm">
+                  Made by <span className="gradient-gold font-semibold">Vignesh Kothandaraman</span>
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

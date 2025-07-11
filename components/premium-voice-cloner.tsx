@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
-import { Upload, Mic, Square, Play, Pause, Loader2, CheckCircle, AlertTriangle, Sparkles } from "lucide-react"
+import { Upload, Mic, Square, Play, Pause, Loader2, AlertCircle, Sparkles, Zap, CheckCircle, Clock } from "lucide-react"
 
 interface PremiumVoiceClonerProps {
   onVoiceCloned: (voiceId: string, audioUrl: string) => void
@@ -13,35 +13,29 @@ interface PremiumVoiceClonerProps {
 
 export default function PremiumVoiceCloner({ onVoiceCloned }: PremiumVoiceClonerProps) {
   const [audioFile, setAudioFile] = useState<File | null>(null)
+  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null)
+  const [audioUrl, setAudioUrl] = useState<string>("")
   const [isRecording, setIsRecording] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [isCloning, setIsCloning] = useState(false)
+  const [isProcessing, setIsProcessing] = useState(false)
   const [progress, setProgress] = useState(0)
   const [currentStep, setCurrentStep] = useState("")
-  const [audioUrl, setAudioUrl] = useState<string>("")
   const [error, setError] = useState<string | null>(null)
-  const [success, setSuccess] = useState<string | null>(null)
-  const [recordingTime, setRecordingTime] = useState(0)
-  const [isVisible, setIsVisible] = useState(false)
+  const [recordingTime, setRecordingTime] = useState(20)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
-  const streamRef = useRef<MediaStream | null>(null)
-  const intervalRef = useRef<NodeJS.Timeout | null>(null)
+  const recordingTimerRef = useRef<NodeJS.Timeout | null>(null)
 
-  useEffect(() => {
-    setIsVisible(true)
-  }, [])
-
-  const handleFileUpload = async (file: File) => {
+  const handleFileUpload = (file: File) => {
     if (file && file.type.startsWith("audio/")) {
       const url = URL.createObjectURL(file)
       setAudioFile(file)
+      setRecordedBlob(null)
       setAudioUrl(url)
       setError(null)
-      setSuccess(null)
     } else {
       setError("Please select a valid audio file (MP3, WAV, M4A, etc.)")
     }
@@ -57,7 +51,6 @@ export default function PremiumVoiceCloner({ onVoiceCloned }: PremiumVoiceCloner
         },
       })
 
-      streamRef.current = stream
       mediaRecorderRef.current = new MediaRecorder(stream, {
         mimeType: "audio/webm;codecs=opus",
       })
@@ -72,18 +65,34 @@ export default function PremiumVoiceCloner({ onVoiceCloned }: PremiumVoiceCloner
       mediaRecorderRef.current.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: "audio/webm" })
         const url = URL.createObjectURL(blob)
+        setRecordedBlob(blob)
+        setAudioFile(null)
         setAudioUrl(url)
-        setAudioFile(new File([blob], "recorded-voice.webm", { type: "audio/webm" }))
+        stream.getTracks().forEach((track) => track.stop())
+
+        // Reset timer
+        if (recordingTimerRef.current) {
+          clearInterval(recordingTimerRef.current)
+          recordingTimerRef.current = null
+        }
+        setRecordingTime(20)
       }
 
       mediaRecorderRef.current.start(100)
       setIsRecording(true)
-      setRecordingTime(0)
       setError(null)
-      setSuccess(null)
+      setRecordingTime(20)
 
-      intervalRef.current = setInterval(() => {
-        setRecordingTime((prev) => prev + 1)
+      // Start countdown timer
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime((prev) => {
+          if (prev <= 1) {
+            // Auto-stop recording when timer reaches 0
+            stopRecording()
+            return 0
+          }
+          return prev - 1
+        })
       }, 1000)
     } catch (error) {
       setError("Could not access microphone. Please check permissions.")
@@ -94,14 +103,23 @@ export default function PremiumVoiceCloner({ onVoiceCloned }: PremiumVoiceCloner
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop()
       setIsRecording(false)
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop())
-      }
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
+
+      // Clear timer
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current)
+        recordingTimerRef.current = null
       }
     }
   }
+
+  // Cleanup timer on component unmount
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current)
+      }
+    }
+  }, [])
 
   const togglePlayback = () => {
     if (audioRef.current) {
@@ -115,272 +133,235 @@ export default function PremiumVoiceCloner({ onVoiceCloned }: PremiumVoiceCloner
     }
   }
 
-  const cloneVoice = async () => {
-    if (!audioFile) return
+  const processVoiceClone = async () => {
+    if (!audioUrl) return
 
-    setIsCloning(true)
+    setIsProcessing(true)
     setProgress(0)
     setError(null)
-    setSuccess(null)
 
     try {
-      setCurrentStep("Analyzing vocal patterns...")
-      setProgress(20)
+      const audioBlob = recordedBlob || audioFile
+      if (!audioBlob) throw new Error("No audio available")
+
+      // Step 1: Upload to ElevenLabs for voice cloning
+      setCurrentStep("🎤 Uploading voice sample...")
+      setProgress(25)
 
       const formData = new FormData()
-      formData.append("audio", audioFile, audioFile.name)
+      formData.append("audio", audioBlob, "voice-sample.wav")
 
-      setCurrentStep("Building neural voice model...")
-      setProgress(50)
-
-      const response = await fetch("/api/clone-voice", {
+      const cloneResponse = await fetch("/api/clone-voice", {
         method: "POST",
         body: formData,
       })
 
-      if (!response.ok) {
-        let errorMessage: string
-        try {
-          const errorData = await response.json()
-          errorMessage = errorData.error || errorData.details || `HTTP ${response.status}`
-        } catch (parseError) {
-          // If JSON parsing fails, try to get text
-          try {
-            const errorText = await response.text()
-            errorMessage = errorText || `HTTP ${response.status}`
-          } catch (textError) {
-            errorMessage = `Network error (${response.status})`
-          }
-        }
-        throw new Error(errorMessage)
+      if (!cloneResponse.ok) {
+        const errorData = await cloneResponse.json()
+        throw new Error(errorData.details || "Voice cloning failed")
       }
 
-      let result: any
-      try {
-        result = await response.json()
-      } catch (jsonError) {
-        throw new Error("Server response was not valid JSON")
-      }
+      setCurrentStep("🧠 Processing neural patterns...")
+      setProgress(50)
 
-      setCurrentStep("Calibrating voice synthesis...")
-      setProgress(80)
+      const cloneResult = await cloneResponse.json()
 
+      setCurrentStep("⚡ Optimizing voice model...")
+      setProgress(75)
+
+      // Small delay for better UX
       await new Promise((resolve) => setTimeout(resolve, 1000))
 
-      setCurrentStep("Resona voice clone complete!")
+      setCurrentStep("✨ Voice clone ready!")
       setProgress(100)
 
-      setSuccess("Your voice has been successfully cloned with Resona technology!")
-
+      // Complete the process
       setTimeout(() => {
-        onVoiceCloned(result.voiceId, audioUrl)
-      }, 2000)
+        onVoiceCloned(cloneResult.voiceId, audioUrl)
+      }, 1000)
     } catch (error) {
       console.error("Voice cloning error:", error)
-      let errorMessage = "Voice cloning failed"
-
-      if (error instanceof Error) {
-        if (error.message.includes("401")) {
-          errorMessage = "Invalid API key. Please check your ElevenLabs configuration."
-        } else if (error.message.includes("429")) {
-          errorMessage = "Rate limit exceeded. Please wait a moment and try again."
-        } else if (error.message.includes("Network error")) {
-          errorMessage = "Network connection failed. Please check your internet connection."
-        } else {
-          errorMessage = error.message
-        }
-      }
-
-      setError(errorMessage)
-      setIsCloning(false)
-      setProgress(0)
-      setCurrentStep("")
+      setError(error instanceof Error ? error.message : "Voice cloning failed")
+      setIsProcessing(false)
     }
   }
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins}:${secs.toString().padStart(2, "0")}`
-  }
-
   return (
-    <div className="max-w-5xl mx-auto">
-      <div
-        className={`text-center mb-12 transition-all duration-1000 ${isVisible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-10"}`}
-      >
-        <div className="flowing-line mb-6">
-          <h2 className="text-5xl font-bold text-white mb-4">
-            Clone Your <span className="gradient-gold">Voice</span>
-          </h2>
+    <Card className="glass-dark border-yellow-500/30 shadow-2xl glow-gold">
+      <CardHeader className="pb-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-4">
+            <div className="w-12 h-12 gradient-gold-bg rounded-xl flex items-center justify-center">
+              <Sparkles className="w-6 h-6 text-black" />
+            </div>
+            <div>
+              <CardTitle className="text-2xl gradient-gold">Neural Voice Cloning</CardTitle>
+              <p className="text-gray-400">Advanced AI voice synthesis technology</p>
+            </div>
+          </div>
+          <Badge className="gradient-gold-bg text-black px-4 py-2 font-semibold">
+            <Zap className="w-4 h-4 mr-2" />
+            Premium
+          </Badge>
         </div>
-        <p className="text-gray-400 max-w-3xl mx-auto leading-relaxed text-2xl">
-          Upload an audio sample or record a voice to create your personalized AI voice clone
-        </p>
-      </div>
+      </CardHeader>
 
-      <Card
-        className={`glass-dark border-yellow-500/20 shadow-2xl transition-all duration-1000 ${isVisible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-10"}`}
-        style={{ animationDelay: "0.2s" }}
-      >
-        <CardHeader>
-          <CardTitle className="text-2xl text-white flex items-center justify-between">
-            <span className="flex items-center">
-              <Sparkles className="w-6 h-6 mr-3 text-yellow-400" />
-              Voice Synthesis Lab
-            </span>
-            <Badge className="gradient-gold-bg text-black px-4 py-1">Neural HD</Badge>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-8">
-          {error && (
-            <div className="glass-dark border border-red-500/30 rounded-xl p-6 flex items-center space-x-4 mb-8">
-              <AlertTriangle className="w-6 h-6 text-red-400" />
-              <p className="text-red-300">{error}</p>
-            </div>
-          )}
+      <CardContent className="space-y-8">
+        {error && (
+          <div className="glass-dark border-red-500/30 rounded-xl p-4 flex items-center space-x-3">
+            <AlertCircle className="w-6 h-6 text-red-400 flex-shrink-0" />
+            <p className="text-red-300 text-sm">{error}</p>
+          </div>
+        )}
 
-          {success && (
-            <div className="glass-dark border border-green-500/30 rounded-xl p-6 flex items-center space-x-4 mb-8">
-              <CheckCircle className="w-6 h-6 text-green-400" />
-              <p className="text-green-300">{success}</p>
-            </div>
-          )}
-
-          {!isCloning && !success && (
-            <div className="space-y-8">
-              {/* Upload Section */}
-              <div
-                className="border-2 border-dashed border-yellow-500/30 rounded-2xl p-12 text-center cursor-pointer hover:border-yellow-400/50 transition-all duration-300 glass-dark"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <Upload className="w-16 h-16 text-yellow-400 mx-auto mb-6" />
-                <h3 className="text-2xl font-semibold text-white mb-4">Upload Audio Sample</h3>
-                <p className="text-gray-400 mb-6 text-lg">
-                  MP3, WAV, M4A - Speak naturally for 30+ seconds for optimal results
-                </p>
-                <Badge className="gradient-gold-bg text-black px-6 py-2 text-sm font-medium">Browse Files</Badge>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="audio/*"
-                  onChange={(e) => e.target.files?.[0] && handleFileUpload(e.target.files[0])}
-                  className="hidden"
-                />
-              </div>
-
-              <div className="relative">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full h-px bg-gradient-to-r from-transparent via-yellow-500/50 to-transparent"></div>
+        {!isProcessing && (
+          <>
+            {/* Upload Section */}
+            <div
+              className="glass-dark border-2 border-dashed border-yellow-500/30 rounded-2xl p-12 text-center cursor-pointer hover:border-yellow-400/50 transition-all duration-300 group"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <div className="space-y-6">
+                <div className="w-20 h-20 gradient-gold-bg rounded-2xl mx-auto flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                  <Upload className="w-10 h-10 text-black" />
                 </div>
-                <div className="relative flex justify-center">
-                  <span className="px-6 bg-black text-gray-400 text-lg">OR</span>
-                </div>
-              </div>
-
-              {/* Recording Section */}
-              <div className="text-center space-y-8">
-                <div className="flex justify-center">
-                  <div
-                    className={`w-32 h-32 rounded-full flex items-center justify-center transition-all duration-300 cursor-pointer ${
-                      isRecording
-                        ? "glass-dark border-4 border-red-400 glow-gold"
-                        : "glass-dark border-4 border-yellow-400/50 hover:border-yellow-400 glow-gold"
-                    }`}
-                    onClick={isRecording ? stopRecording : startRecording}
-                  >
-                    {isRecording ? (
-                      <div className="text-center">
-                        <Square className="w-8 h-8 text-red-400 mb-2 mx-auto" />
-                        <div className="text-red-400 text-sm font-mono">{formatTime(recordingTime)}</div>
-                      </div>
-                    ) : (
-                      <Mic className="w-12 h-12 text-yellow-400" />
-                    )}
-                  </div>
-                </div>
-
                 <div>
-                  <h3 className="text-2xl font-semibold text-white mb-4">
-                    {isRecording ? "Recording Your Voice..." : "Record Your Voice"}
-                  </h3>
-                  <p className="text-gray-400 max-w-2xl mx-auto text-lg leading-relaxed">
-                    Speak naturally about yourself, read a paragraph, or have a conversation. The more natural your
-                    speech, the better your clone will sound.
-                  </p>
+                  <h3 className="text-2xl font-bold text-white mb-3">Upload Audio Sample</h3>
+                  <p className="text-gray-400 text-lg">Drop your audio file here or click to browse</p>
+                  <p className="text-gray-500 text-sm mt-2">Supports MP3, WAV, M4A • Minimum 10 seconds recommended</p>
+                </div>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="audio/*"
+                onChange={(e) => e.target.files?.[0] && handleFileUpload(e.target.files[0])}
+                className="hidden"
+              />
+            </div>
+
+            <div className="flex items-center space-x-4">
+              <div className="flex-1 h-px bg-gradient-to-r from-transparent via-yellow-500/50 to-transparent"></div>
+              <span className="text-gray-400 font-medium px-4">OR</span>
+              <div className="flex-1 h-px bg-gradient-to-r from-transparent via-yellow-500/50 to-transparent"></div>
+            </div>
+
+            {/* Recording Section */}
+            <div className="text-center space-y-8">
+              <div className="flex justify-center">
+                <div
+                  className={`w-32 h-32 rounded-full flex items-center justify-center transition-all duration-300 relative ${
+                    isRecording
+                      ? "bg-red-500/20 border-4 border-red-500/50 scale-110"
+                      : "gradient-gold-bg hover:scale-105"
+                  }`}
+                >
+                  <Mic className={`w-16 h-16 ${isRecording ? "text-red-500" : "text-black"}`} />
+
+                  {/* Recording Timer */}
+                  {isRecording && (
+                    <div className="absolute -bottom-12 left-1/2 transform -translate-x-1/2">
+                      <div className="flex items-center space-x-2 glass-dark rounded-full px-4 py-2 border border-red-500/30">
+                        <Clock className="w-4 h-4 text-red-400" />
+                        <span className="text-red-300 font-mono text-lg font-bold">{recordingTime}s</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* Audio Preview & Clone */}
-              {audioUrl && (
-                <div className="glass-dark rounded-2xl p-8 border border-yellow-500/20">
-                  <div className="flex items-center space-x-6 mb-6">
-                    <div className="w-16 h-16 gradient-gold-bg rounded-2xl flex items-center justify-center">
-                      <CheckCircle className="w-8 h-8 text-black" />
-                    </div>
-                    <div className="flex-1">
-                      <h4 className="text-xl font-semibold text-white mb-2">{audioFile?.name || "Voice Recording"}</h4>
-                      <p className="text-gray-400">Ready for neural voice synthesis</p>
+              <div className="space-y-4">
+                {!isRecording ? (
+                  <Button
+                    onClick={startRecording}
+                    className="gradient-gold-bg text-black hover:opacity-90 px-12 py-6 text-xl font-bold rounded-2xl"
+                    size="lg"
+                  >
+                    <Mic className="w-6 h-6 mr-3" />
+                    Start Recording
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={stopRecording}
+                    className="bg-red-500 hover:bg-red-600 text-white px-12 py-6 text-xl font-bold rounded-2xl"
+                    size="lg"
+                  >
+                    <Square className="w-6 h-6 mr-3" />
+                    Stop Recording
+                  </Button>
+                )}
+                <p className="text-gray-400 text-lg">
+                  {isRecording
+                    ? `Recording... ${recordingTime} seconds remaining`
+                    : "Record 15-30 seconds for optimal results (20 second max)"}
+                </p>
+              </div>
+            </div>
+
+            {/* Audio Preview & Process */}
+            {audioUrl && (
+              <div className="glass-dark rounded-2xl p-8 border border-yellow-500/30">
+                <div className="space-y-6">
+                  <div className="flex items-center space-x-4">
+                    <CheckCircle className="w-8 h-8 text-green-400" />
+                    <div>
+                      <h3 className="text-xl font-bold text-white">
+                        {audioFile ? `📁 ${audioFile.name}` : "🎤 Voice Recording"}
+                      </h3>
+                      <p className="text-gray-400">Ready for neural processing</p>
                     </div>
                   </div>
 
                   <audio ref={audioRef} src={audioUrl} onEnded={() => setIsPlaying(false)} className="hidden" />
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="flex space-x-4">
                     <Button
                       onClick={togglePlayback}
                       variant="outline"
-                      size="lg"
-                      className="glass-dark border-yellow-500/30 text-white hover:bg-yellow-500/10 py-4"
+                      className="flex-1 border-yellow-500/30 text-white hover:bg-yellow-500/10 py-6 text-lg bg-transparent"
                     >
                       {isPlaying ? (
                         <>
-                          <Pause className="w-5 h-5 mr-2" />
+                          <Pause className="w-5 h-5 mr-3" />
                           Pause Preview
                         </>
                       ) : (
                         <>
-                          <Play className="w-5 h-5 mr-2" />
-                          Play Preview
+                          <Play className="w-5 h-5 mr-3" />
+                          Preview Audio
                         </>
                       )}
                     </Button>
                     <Button
-                      onClick={cloneVoice}
-                      size="lg"
-                      className="gradient-gold-bg hover:shadow-2xl hover:shadow-yellow-500/25 text-black py-4 font-semibold"
+                      onClick={processVoiceClone}
+                      className="flex-1 gradient-gold-bg text-black hover:opacity-90 py-6 text-lg font-bold"
                     >
-                      <Sparkles className="w-5 h-5 mr-2" />
-                      Create Voice Clone
+                      <Sparkles className="w-5 h-5 mr-3" />
+                      Clone Voice
                     </Button>
                   </div>
                 </div>
-              )}
-            </div>
-          )}
-
-          {/* Cloning Progress */}
-          {isCloning && (
-            <div className="text-center space-y-8">
-              <div className="w-24 h-24 mx-auto glass-dark rounded-full flex items-center justify-center glow-gold">
-                <Loader2 className="w-12 h-12 text-yellow-400 animate-spin" />
               </div>
+            )}
+          </>
+        )}
 
-              <div className="space-y-4">
-                <h3 className="text-2xl font-semibold text-white">{currentStep}</h3>
-                <div className="max-w-md mx-auto">
-                  <Progress value={progress} className="h-3 bg-gray-800" />
-                  <p className="text-gray-400 mt-3 text-lg">{progress}% Complete</p>
-                </div>
+        {/* Processing */}
+        {isProcessing && (
+          <div className="text-center space-y-8 py-12">
+            <div className="flex justify-center">
+              <div className="w-32 h-32 gradient-gold-bg rounded-full flex items-center justify-center animate-pulse">
+                <Loader2 className="w-16 h-16 animate-spin text-black" />
               </div>
-
-              <p className="text-gray-400 max-w-2xl mx-auto text-lg">
-                Resona is analyzing your vocal patterns and creating your personalized neural voice model...
-              </p>
             </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
+            <div className="space-y-4">
+              <h3 className="text-2xl font-bold text-white">{currentStep}</h3>
+              <Progress value={progress} className="w-full h-3 bg-gray-800" />
+              <p className="text-gray-400 text-lg">Neural networks are analyzing your voice patterns...</p>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }

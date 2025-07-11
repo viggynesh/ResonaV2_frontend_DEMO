@@ -9,130 +9,111 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No audio file provided" }, { status: 400 })
     }
 
-    console.log("🎤 Creating voice clone with ElevenLabs:", audioFile.name)
-
-    // Check if API key exists
+    // Check if ElevenLabs API key exists
     if (!process.env.ELEVENLABS_API_KEY) {
       console.error("ELEVENLABS_API_KEY environment variable is not set")
       return NextResponse.json({ error: "ElevenLabs API key not configured" }, { status: 500 })
     }
 
-    // Handle API key - the new key starts with sk_ so use it directly
+    // Handle API key - ElevenLabs keys start with sk_
     let elevenLabsApiKey: string
     const rawKey = process.env.ELEVENLABS_API_KEY
 
-    if (rawKey && rawKey.startsWith("sk_")) {
+    if (rawKey.startsWith("sk_")) {
       elevenLabsApiKey = rawKey
-      console.log("✅ Using ElevenLabs key directly")
-    } else if (rawKey) {
+    } else {
       try {
         elevenLabsApiKey = Buffer.from(rawKey, "base64").toString("utf-8")
-        console.log("✅ ElevenLabs API key decoded from base64")
       } catch (decodeError) {
         console.error("Failed to decode ElevenLabs API key:", decodeError)
         return NextResponse.json({ error: "API key decode error" }, { status: 500 })
       }
-    } else {
-      console.error("ELEVENLABS_API_KEY environment variable is not set")
-      return NextResponse.json({ error: "ElevenLabs API key not configured" }, { status: 500 })
     }
 
-    // Convert audio file to the format expected by ElevenLabs
-    const audioBuffer = await audioFile.arrayBuffer()
+    console.log("🗣️ Starting voice cloning process...")
 
-    // Create a new FormData for ElevenLabs API
-    const elevenLabsFormData = new FormData()
+    // Step 1: Clean up existing temporary voices
+    try {
+      console.log("🧹 Cleaning up existing voices...")
+      const voicesResponse = await fetch("https://api.elevenlabs.io/v1/voices", {
+        headers: {
+          "xi-api-key": elevenLabsApiKey,
+        },
+      })
 
-    // Convert to a proper audio blob
-    const audioBlob = new Blob([audioBuffer], { type: "audio/mpeg" })
-    elevenLabsFormData.append("files", audioBlob, "voice-sample.mp3")
-    elevenLabsFormData.append("name", `Voice Clone ${Date.now()}`)
-    elevenLabsFormData.append("description", "AI voice clone from user recording")
+      if (voicesResponse.ok) {
+        const voicesData = await voicesResponse.json()
+        const tempVoices = voicesData.voices.filter(
+          (voice: any) =>
+            voice.name.startsWith("UniqueVoice_") || voice.name.startsWith("TempVoice_") || voice.category === "cloned",
+        )
 
-    console.log("📡 Calling ElevenLabs voice cloning API...")
+        // Delete existing temp voices in parallel
+        const deletePromises = tempVoices.map(async (voice: any) => {
+          try {
+            const deleteResponse = await fetch(`https://api.elevenlabs.io/v1/voices/${voice.voice_id}`, {
+              method: "DELETE",
+              headers: {
+                "xi-api-key": elevenLabsApiKey,
+              },
+            })
+            console.log(`🗑️ Deleted voice ${voice.name}: ${deleteResponse.status}`)
+          } catch (error) {
+            console.error(`Failed to delete voice ${voice.name}:`, error)
+          }
+        })
 
-    // Call ElevenLabs API to create voice clone
-    const response = await fetch("https://api.elevenlabs.io/v1/voices/add", {
+        await Promise.all(deletePromises)
+
+        // Wait a bit for ElevenLabs to process deletions
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+      }
+    } catch (cleanupError) {
+      console.warn("Voice cleanup failed, continuing with cloning:", cleanupError)
+    }
+
+    // Step 2: Create unique voice name with session ID
+    const timestamp = Date.now()
+    const sessionId = Math.random().toString(36).substring(2, 8)
+    const voiceName = `UniqueVoice_${timestamp}_${sessionId}`
+
+    console.log("🎤 Creating voice clone with name:", voiceName)
+
+    // Step 3: Create the voice clone
+    const cloneFormData = new FormData()
+    cloneFormData.append("name", voiceName)
+    cloneFormData.append("files", audioFile)
+    cloneFormData.append("description", "Temporary voice clone for chat session")
+
+    const cloneResponse = await fetch("https://api.elevenlabs.io/v1/voices/add", {
       method: "POST",
       headers: {
         "xi-api-key": elevenLabsApiKey,
       },
-      body: elevenLabsFormData,
+      body: cloneFormData,
     })
 
-    console.log("📡 ElevenLabs response status:", response.status)
+    console.log("📡 ElevenLabs clone response:", cloneResponse.status)
 
-    if (!response.ok) {
-      let errorText: string
-      let errorDetails: any = {}
-
-      try {
-        // Try to parse as JSON first
-        const contentType = response.headers.get("content-type")
-        if (contentType && contentType.includes("application/json")) {
-          errorDetails = await response.json()
-          errorText =
-            errorDetails.detail?.message || errorDetails.message || errorDetails.error || `HTTP ${response.status}`
-        } else {
-          // If not JSON, get as text
-          errorText = await response.text()
-          // Clean up common error prefixes
-          if (errorText.startsWith("Internal server error") || errorText.startsWith("Internal s")) {
-            errorText = "ElevenLabs service temporarily unavailable"
-          }
-        }
-      } catch (parseError) {
-        console.error("Error parsing ElevenLabs response:", parseError)
-        errorText = `ElevenLabs API error (${response.status})`
-      }
-
-      console.error("❌ ElevenLabs API error:", response.status, errorText)
-
-      if (response.status === 401) {
-        return NextResponse.json({ error: "Invalid ElevenLabs API key" }, { status: 401 })
-      }
-
-      if (response.status === 429) {
-        return NextResponse.json({ error: "Rate limit exceeded. Please try again in a moment." }, { status: 429 })
-      }
-
-      return NextResponse.json(
-        {
-          error: "Voice cloning failed",
-          details: errorText,
-        },
-        { status: response.status },
-      )
+    if (!cloneResponse.ok) {
+      const errorText = await cloneResponse.text()
+      console.error("ElevenLabs clone error:", errorText)
+      throw new Error(`Voice cloning failed: ${cloneResponse.status}`)
     }
 
-    // Also improve the success response parsing
-    let data: any
-    try {
-      data = await response.json()
-    } catch (jsonError) {
-      console.error("Error parsing success response:", jsonError)
-      return NextResponse.json(
-        {
-          error: "Voice cloning completed but response parsing failed",
-          details: "Please try again",
-        },
-        { status: 500 },
-      )
-    }
-
-    console.log("✅ Voice clone created successfully:", data.voice_id)
+    const cloneResult = await cloneResponse.json()
+    console.log("✅ Voice cloned successfully:", cloneResult.voice_id)
 
     return NextResponse.json({
       success: true,
-      voiceId: data.voice_id,
-      name: data.name,
-      message: "Voice successfully cloned with ElevenLabs!",
+      voiceId: cloneResult.voice_id,
+      voiceName: voiceName,
     })
   } catch (error) {
     console.error("❌ Voice cloning error:", error)
     return NextResponse.json(
       {
-        error: "Failed to clone voice",
+        error: "Voice cloning failed",
         details: error instanceof Error ? error.message : "Unknown error",
       },
       { status: 500 },
