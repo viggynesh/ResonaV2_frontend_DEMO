@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Mic, MicOff, Phone, PhoneOff, Settings } from "lucide-react"
+import { getVapiPublicKey } from "@/app/actions/vapi"
 
 interface AdvancedVoiceChatProps {
   customVoiceId?: string
@@ -21,11 +22,11 @@ export default function AdvancedVoiceChat({ customVoiceId }: AdvancedVoiceChatPr
   )
 
   useEffect(() => {
-    // Load VAPI SDK
     const script = document.createElement("script")
     script.src = "https://cdn.jsdelivr.net/npm/@vapi-ai/web@latest/dist/index.js"
-    script.onload = () => {
-      const vapiInstance = new (window as any).Vapi(process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY)
+    script.onload = async () => {
+      const publicKey = await getVapiPublicKey()
+      const vapiInstance = new (window as any).Vapi(publicKey)
       setVapi(vapiInstance)
 
       vapiInstance.on("call-start", () => {

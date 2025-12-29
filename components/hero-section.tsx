@@ -73,8 +73,7 @@ export default function HeroSection({ onGetStarted }: HeroSectionProps) {
             className="text-xl md:text-2xl text-gray-400 mb-12 max-w-4xl mx-auto leading-relaxed font-light animate-fade-in-up"
             style={{ animationDelay: "0.6s" }}
           >
-            Clone any voice with unprecedented accuracy and engage with an AI that speaks with the exact vocal
-            signature.
+            AI-powered memory cueing that clones familiar voices and injests personalized knowledge bases to support dementia care.
           </p>
 
           {/* Features Grid */}
