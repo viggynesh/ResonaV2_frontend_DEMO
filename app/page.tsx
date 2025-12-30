@@ -94,6 +94,22 @@ export default function HomePage() {
             </div>
           </header>
 
+          <div className="fixed top-6 right-6 z-50">
+            <div className="glass-dark rounded-xl px-4 py-3 border border-red-500/30 backdrop-blur-md glow-gold max-w-xs">
+              <div className="flex items-start space-x-2">
+                <div className="flex-shrink-0 mt-0.5">
+                  <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                </div>
+                <div>
+                  <p className="text-white font-semibold text-sm mb-1">Note:</p>
+                  <p className="text-gray-300 text-xs leading-relaxed">
+                    Backend has been disconnected due to API costs. Features may not work as intended.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Progress Indicator */}
           <div className="flex justify-center mb-12">
             <div className="flex items-center space-x-8">
